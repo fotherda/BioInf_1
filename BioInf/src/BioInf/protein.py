@@ -19,6 +19,12 @@ C_TERMINAL_50 = 2
 AA_CODES = ['A','C','D','E','F','G','H','I','K','L','M','N','P','Q','R','S','T','V','W','Y']
 UNKNOWNS = ['X','U','B']
 
+#In vivo half-life in mammals in hours 
+in_vivo_half_life = { 'A': 4.4, 'R': 1, 'N': 1.4, 'D': 1.1, 'C': 1.2,
+                      'Q': 0.8, 'E': 1, 'G': 30, 'H': 3.5, 'I': 20,
+                      'L': 5.5, 'K': 1.3, 'M': 30, 'F': 1.1, 'P': 20,
+                      'S': 1.9, 'T': 7.2, 'W': 2.8, 'Y': 2.8, 'V': 100}
+
 class Protein(ProteinAnalysis):
 
     category_codes = {'cyto': 0,'mito': 1,'secreted': 2,'nucleus': 3, 'blind': 4}
@@ -37,6 +43,7 @@ class Protein(ProteinAnalysis):
             self._no_unknowns = ProteinAnalysis(new_seq)
         else:
             self._contains_unknown=False
+            self._no_unknowns = self
                 
         
     def get_sequence(self):
@@ -103,8 +110,12 @@ class Protein(ProteinAnalysis):
          
         return flex
                        
-    def get_N_terminus_aa(self):
-        return AA_CODES.index(self._sequence[0])
+    def in_vivo_half_life(self): #N-end rule
+        if self._sequence[0] not in UNKNOWNS:
+            return in_vivo_half_life[ self._sequence[0] ]
+        else:
+            return 5 #approx avg value
+        
     
     def has_KDEL(self): #ER retention signal
         if self._sequence[-4:] == 'KDEL':
@@ -143,20 +154,20 @@ class Protein(ProteinAnalysis):
         else:
             return False
     
-    def hydrophobicity(self, param_dict, window, edge=1.0):
-        hphob = self._no_unknowns.protein_scale(ProtParamData.kd, 1)
+    def hydrophobicity(self):
+        hphob = self._no_unknowns.protein_scale(ProtParamData.kd, 3)
         return np.mean(hphob)
     
-    def surface_accessibility(self, param_dict, window, edge=1.0):
-        em = self._no_unknowns.protein_scale(ProtParamData.em, 1)
+    def surface_accessibility(self):
+        em = self._no_unknowns.protein_scale(ProtParamData.em, 3)
         return np.mean(em)
     
-    def transfer_energy(self, param_dict, window, edge=1.0):
-        te = self._no_unknowns.protein_scale(ProtParamData.ja, 1)
+    def transfer_energy(self):
+        te = self._no_unknowns.protein_scale(ProtParamData.ja, 3)
         return np.mean(te)
     
-    def hydrophilicity(self, param_dict, window, edge=1.0):
-        hphil = self._no_unknowns.protein_scale(ProtParamData.hw, 1)
+    def hydrophilicity(self):
+        hphil = self._no_unknowns.protein_scale(ProtParamData.hw, 3)
         return np.mean(hphil)
     
             

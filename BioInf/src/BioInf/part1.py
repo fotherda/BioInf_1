@@ -105,6 +105,38 @@ def build_net(x, n_inputs, layer_sizes, use_batch_norm, keep_prob):
     
     previous_layer = x
     
+    for n_units in layer_sizes:  
+        W = weight_variable([n_inputs, n_units])
+        b = bias_variable([n_units])    
+        lin = tf.matmul(previous_layer, W) + b  
+        
+        if use_batch_norm:
+            batch_mean, batch_var = tf.nn.moments(lin,[0])
+            h_hat = (lin - batch_mean) / tf.sqrt(batch_var + 1e-3)
+            scale = tf.Variable(tf.ones([n_units]))
+            beta = tf.Variable(tf.zeros([n_units]))
+            BN = scale * h_hat + beta
+            h = tf.nn.relu(BN)    
+        else:
+            h = tf.nn.relu(lin)
+      
+        h_drop = tf.nn.dropout(h, keep_prob) 
+        n_inputs = n_units 
+        previous_layer = h_drop
+
+    W = weight_variable([n_inputs, NUM_CATEGORIES])
+    b = bias_variable([NUM_CATEGORIES])
+    logits = tf.matmul(previous_layer, W) + b
+    
+    y = tf.nn.sigmoid(logits, name='sigmoid_outputs')
+
+        
+    return logits, y
+
+def build_net_old(x, n_inputs, layer_sizes, use_batch_norm, keep_prob):  
+    
+    previous_layer = x
+    
 #     for n_units in layer_sizes:  
 #         W = weight_variable([n_inputs, n_units])
 #         b = bias_variable([n_units])    
@@ -198,13 +230,15 @@ def import_data():
     LocSigDB_sequences =[] #533 entries
     for line in open("LocSigDB.csv"):
         LocSigDB_sequences.append( line.replace('\n', '').replace('x', '') )
-
+    print('LocSigDB entries %d' %(len(LocSigDB_sequences)))
+    
     SPdb_sequences = {}
 
     fasta_sequences = SeqIO.parse(open('SPdb'+'.fasta','r'),'fasta')
     for fasta in fasta_sequences:
         name, sequence = fasta.id, str(fasta.seq)
         SPdb_sequences[name] = sequence     
+    print('SPdb entries %d' %(len(SPdb_sequences)))
         
     proteins = []
     
@@ -252,7 +286,6 @@ def build_input_data(proteins, SPdb_sequences, LocSigDB_sequences):
     LocSigDB_count = 0
     
     for p in proteins:
-#         del x[:]
         x = []
         
         for seq_flag in [WHOLE_SEQUENCE, N_TERMINAL_50, C_TERMINAL_50]:
@@ -263,6 +296,8 @@ def build_input_data(proteins, SPdb_sequences, LocSigDB_sequences):
             x.append( sub_p.instability_index() )
             x.append( np.mean(sub_p.flexibility()) )
             x.append( sub_p.isoelectric_point() )
+            x.append( sub_p.hydrophobicity() )
+            x.append( sub_p.hydrophilicity() )
             (Helix, Turn, Sheet) = sub_p.secondary_structure_fraction()
             x.extend( (Helix, Turn, Sheet) )
 #             x.append( p.get_N_terminus_aa() )
@@ -276,6 +311,8 @@ def build_input_data(proteins, SPdb_sequences, LocSigDB_sequences):
                 x.append( int(sub_p.sequence_length()) )
                 x.append( int(sub_p.has_Chelsky_sequence()) )
                 x.append( int(sub_p.has_NLS()) )
+                x.append( int(sub_p.in_vivo_half_life()) )
+                
                 
 #                 for SPdb_seq in SPdb_sequences:
 #                     x.append( int(SPdb_seq in sub_p.get_sequence() ) )
@@ -292,14 +329,11 @@ def build_input_data(proteins, SPdb_sequences, LocSigDB_sequences):
     
     print('num LocSigDB matches=%d' %(LocSigDB_count) )
     print('num SPdb matches=%d' %(SPdb_count) )
+    print('num inputs=%d' %(len(x)) )
     
     return np.asarray(X), np.asarray(y)
 
 def normalize(X):
-    
-#     ftr_means = np.mean(X, axis=0)
-#     ftr_stds = np.std(X, axis=0)
-    
     med = np.median(X, axis=0)
     diff = X - med
     ab = np.abs(diff)
@@ -307,7 +341,6 @@ def normalize(X):
     std[std == 0] = 1
     
     X_norm = (X - med)/std
-#     X_norm = (X - ftr_means)/ftr_stds
     
     return X_norm, med, std
 
@@ -327,8 +360,7 @@ def run_models(FLAGS):
     use_batch_norm = FLAGS.bn
     
     decay = learning_rate_val / 2e4
-    use_peepholes = False; peep_str='' #only for LSTM
-    BATCH_SIZE = 512
+    BATCH_SIZE = 32
     
     inputs_data_filename = 'input_data.pi'
     calc_inputs = True
@@ -340,6 +372,8 @@ def run_models(FLAGS):
     else:
         (X_all, y_all) = pi.load( open( inputs_data_filename, "rb" ) )
 
+    print('num inputs=' + str(len(X_all[0])))
+
     X_all, _, _ = normalize(X_all)
     X_non_blind = []
     y_non_blind = []
@@ -349,56 +383,41 @@ def run_models(FLAGS):
             X_blind.append(x_i)
         else:
             X_non_blind.append(x_i)
-#             one_hot_vec = np.eye(NUM_CATEGORIES)[y_i]
-#             y_non_blind.append(one_hot_vec)
             y_non_blind.append(y_i)
             
     X_all = np.asarray(X_non_blind)
     y_all = np.asarray(y_non_blind)
     
-                
-    #Build different model types
-    
-#     if ps._cell_type=='L':
-#         cell = tf.nn.rnn_cell.LSTMCell(ps._num_units, use_peepholes=use_peepholes)
-#     elif ps._cell_type=='G':
-#         cell = tf.nn.rnn_cell.GRUCell(ps._num_units)
-# 
-#     if ps._num_layers>1:
-#         cell = tf.nn.rnn_cell.MultiRNNCell([cell] * ps._num_layers)
-
     keep_prob = tf.placeholder(tf.float32, name='keep_prob')
     learning_rate = tf.placeholder(tf.float32, shape=[])
     n_inputs = len(X_all[0])
     
     x = tf.placeholder(tf.float32, [None, n_inputs], name='x')
     y_ = tf.placeholder(tf.int32, [None], name='y_')
-    y = build_net(x, n_inputs, [256,64], use_batch_norm, keep_prob ) 
+    logits, y = build_net(x, n_inputs, [256,64], use_batch_norm, keep_prob ) 
 
     cross_entropy = tf.reduce_mean(
-                    tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y_, logits=y))
+                    tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y_, logits=logits))
 
-#     train_step = tf.train.GradientDescentOptimizer(learning_rate).minimize(cross_entropy)
     train_step = tf.train.AdamOptimizer(learning_rate).minimize(cross_entropy)
-#     train_step = tf.train.MomentumOptimizer(learning_rate, momentum=0.9).minimize(cross_entropy)
     
 
     # Test trained model
     argm_y = tf.to_int32( tf.argmax(y, 1) )
+    max_y = tf.reduce_max(y, 1) 
     correct_prediction = tf.equal(argm_y, y_)
-    accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+    accuracy_vec = tf.cast(correct_prediction, tf.float32)
+    accuracy = tf.reduce_mean(accuracy_vec)
     tf.summary.scalar('accuracy', accuracy)
 
 #     tf.summary.scalar('learning_rate', learning_rate)
     tf.summary.scalar('CrossEntropy', cross_entropy)
-    path_arr = [FLAGS.model, "drop{:.1f}".format(dropout_val), peep_str, 'bs' + str(BATCH_SIZE),
+    path_arr = [FLAGS.model, "drop{:.1f}".format(dropout_val), 'bs' + str(BATCH_SIZE),
                 "lr{:.2g}".format(learning_rate_val)]
     if use_batch_norm:
         path_arr.append('bn')
 
 #     show_all_variables()
-
-    
             
     with tf.Session() as sess:  
         tf.global_variables_initializer().run()    
@@ -419,22 +438,29 @@ def run_models(FLAGS):
             
         if not FLAGS.eval: #Train new model
             # Merge all the summaries and write them out to file
+            print('Starting Training.........')
             merged = tf.summary.merge_all()
-            
-            summary_file_name = '/'.join(path_arr)
-            dir_name = summaries_dir + '/' + summary_file_name;
-            train_writer = tf.summary.FileWriter(dir_name + '/train', sess.graph)
-            test_writer = tf.summary.FileWriter(dir_name + '/test')
-            
             lrs = LearningRateScheduler(decay)
             
-            print('Starting Training.........')
-    
         #     cv_data = KFold(n_splits=5)
-            cv_data = StratifiedKFold(n_splits=5)
+            n_splits = 5
+            cv_data = StratifiedKFold(n_splits=n_splits)
+            cv_train_accuracy = []
+            cv_test_accuracy = []
+            cv_test_confidence = []
+            cv_test_accuracy_vec = []
+            cv_test_y_vec = []
+            cv_test_y_pred = []
             fold = -1
             for train, test in cv_data.split(X_all, y_all):
                 fold += 1
+
+                summary_file_name = '/'.join(path_arr)
+                dir_name = summaries_dir + '/' + summary_file_name;
+                train_writer = tf.summary.FileWriter(dir_name + '/train/f' + str(fold), sess.graph)
+                test_writer = tf.summary.FileWriter(dir_name + '/test/f' + str(fold))
+                
+    
         #         print("%s %s" % (train, test))
                 X_train = X_all[train]
                 y_train = y_all[train]
@@ -442,12 +468,10 @@ def run_models(FLAGS):
                 y_test = y_all[test]
                 
                 tf.global_variables_initializer().run()    
-                conv_tester = ConvergenceTester(0.001, lookback_window=5, decreasing=True) #stop if converged to within 0.05%
-#                 clf = svm.SVC(kernel='linear', C=1).fit(X_train, y_train)
-#                 clf.score(X_test, y_test)                           
-                clf = svm.SVC(kernel='rbf', C=1, class_weight='balanced')
-                scores = cross_val_score(clf, X_all, y_all, cv=2)
-                print('SVM score: ', scores)
+                conv_tester = ConvergenceTester(0.001, lookback_window=2, decreasing=True) #stop if converged to within 0.05%
+#                 clf = svm.SVC(kernel='rbf', C=0.5, class_weight='balanced')
+#                 scores = cross_val_score(clf, X_all, y_all, cv=2)
+#                 print('SVM score: ', scores)
     
                 db = DataBatcher(X_train, y_train)
                 ntrain = X_train.shape[0]
@@ -463,11 +487,25 @@ def run_models(FLAGS):
                                                         learning_rate: learning_rate_val, keep_prob: dropout_val})
                     end = timer()
                  
-                    if epoch % 5 == 0: #calc intermediate results
+                    #save trained model
+                    model_file_name = '_'.join(path_arr)+'_'+ str(epoch) #write every epoch
+                    save_model(sess, model_file_name, root_dir)
+                    
+                    if epoch % 1 == 0: #calc intermediate results
          
-                        y_vals, train_accuracy, train_loss, train_summary = sess.run([argm_y, accuracy, cross_entropy, merged], feed_dict={x: X_train, y_: y_train, keep_prob: 1.0})                                      
-                        argm_y_val, test_accuracy, test_loss, test_summary = sess.run([argm_y, accuracy, cross_entropy, merged], feed_dict={x: X_test, y_: y_test, keep_prob: 1.0})
-                        print("f %d, e %d, tr:te accuracy %g : %g loss %g : %g lr %g et %s" % 
+                        train_accuracy, train_loss, train_summary = sess.run([accuracy, cross_entropy, merged], feed_dict={x: X_train, y_: y_train, keep_prob: 1.0})                                      
+                        y_vec, confidence, accuracy_vec_val, y_pred, test_accuracy, test_loss, test_summary = \
+                            sess.run([y, max_y, accuracy_vec, argm_y, accuracy, cross_entropy, merged], feed_dict={x: X_test, y_: y_test, keep_prob: 1.0})
+                        
+                        cv_train_accuracy.append(train_accuracy)
+                        cv_test_accuracy.append(test_accuracy)
+                        cv_test_confidence.extend(confidence)
+                        cv_test_accuracy_vec.extend(accuracy_vec_val)
+                        cv_test_y_pred.extend(y_pred)
+                        cv_test_y_vec.extend(y_vec)
+                        
+                        if epoch % 100 == 0: #calc intermediate results
+                            print("f %d, e %d, tr:te accuracy %g : %g loss %g : %g lr %g et %s" % 
                               (fold, epoch, train_accuracy, test_accuracy, train_loss, test_loss, learning_rate_val, str(datetime.timedelta(seconds=end-start))))
                                        
 #                         if np.isnan(train_loss) or np.isnan(test_loss):
@@ -477,13 +515,15 @@ def run_models(FLAGS):
                         test_writer.add_summary(test_summary, i)
                         
                         if conv_tester.has_converged(test_loss):
-                            print('converged after ', epoch, ' epochs')
+#                             print('converged after ', epoch, ' epochs')
+                            print("converged f %d, e %d, tr:te accuracy %g : %g loss %g : %g lr %g et %s" % 
+                              (fold, epoch, train_accuracy, test_accuracy, train_loss, test_loss, learning_rate_val, str(datetime.timedelta(seconds=end-start))))
                             break
+                        
+        print('mean test accuracy=%f' %(np.mean(cv_test_accuracy)))                            
+#         analyse_test_results(cv_train_accuracy, cv_test_accuracy, cv_test_confidence, 
+#                              cv_test_accuracy_vec, cv_test_y_pred, cv_test_y_vec)
                             
-                    #save trained model
-                    model_file_name = '_'.join(path_arr)+'_'+ str(epoch) #write every epoch
-                    save_model(sess, model_file_name, root_dir)
-    #             exit()
             
         if FLAGS.eval and True:
             #print final results        
@@ -498,4 +538,36 @@ def run_models(FLAGS):
             test_loss, test_accuracy = sess.run([cross_entropy, accuracy], feed_dict={x: X_test, y_: y_test, keep_prob: 1.0})                                      
             print("\ntrain loss %.6f train accuracy %.6f" % (np.mean(train_losses), np.mean(train_accuracies)))
             print("\ntest loss %.6f test accuracy %.6f" % (test_loss, test_accuracy))
+
+
+from scipy.stats.stats import pearsonr 
+import pandas as pd
     
+def analyse_test_results(cv_train_accuracy, cv_test_accuracy, cv_test_confidence, 
+                         cv_test_accuracy_vec, cv_test_y_pred, cv_test_y_vec):
+
+    data = np.transpose( np.asarray( [cv_test_confidence, cv_test_accuracy_vec] ) )
+    df = pd.DataFrame(data, columns=["confidence","correct_incorrect"])
+    grouped = df.groupby("correct_incorrect")
+    res = grouped.aggregate([np.min, np.mean, np.max, np.std]) 
+    print('Confidence by correct/incorrect:')
+    print(res)
+    
+    data = np.transpose( np.asarray( [cv_test_accuracy_vec, cv_test_y_pred] ) )
+    df = pd.DataFrame(data, columns=["accuracy","class_label"])
+    grouped = df.groupby("class_label")
+    res = grouped.aggregate([np.min, np.mean, np.max, np.std]) 
+    print('Accuracy of classification by class:')
+    print(res)
+    
+    data =  np.asarray( cv_test_y_vec )
+    df = pd.DataFrame(data, columns=['cyto','mito','secreted','nucleus'])
+    res = df.corr()
+    print('Correlation between predictions for each class:')
+    print(res)
+    
+    print('train accuracies: mean=', np.mean(cv_train_accuracy), end='')
+    print(' ', cv_train_accuracy)
+    print('test accuracies: mean=', np.mean(cv_test_accuracy), end='')
+    print(' ', cv_test_accuracy)
+
