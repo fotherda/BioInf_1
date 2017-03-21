@@ -45,6 +45,8 @@ class Protein(ProteinAnalysis):
             self._contains_unknown=False
             self._no_unknowns = self
                 
+    def get_name(self):
+        return self._name
         
     def get_sequence(self):
         return self._sequence    

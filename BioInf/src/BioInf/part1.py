@@ -6,10 +6,8 @@ import sys, os
 import numpy as np
 import logging
 from sklearn.model_selection import StratifiedKFold, KFold
-from sklearn.model_selection import train_test_split
-from sklearn import datasets
-from sklearn import svm
-from sklearn.model_selection import cross_val_score
+from sklearn import svm, metrics
+from sklearn.model_selection import cross_val_score, cross_val_predict
 
 logging.getLogger("tensorflow").setLevel(logging.ERROR)
 import tensorflow as tf
@@ -19,16 +17,12 @@ import pickle as pi
 from BioInf.protein import *
 from Bio import SeqIO
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
-from BioInf.protein import *
 
 from timeit import default_timer as timer
 
-from tensorflow.examples.tutorials.mnist import input_data
 from Advanced_1.convergenceTester import ConvergenceTester
 from Advanced_1.learningRateScheduler import LearningRateScheduler
 from Advanced_1.dataBatcher import DataBatcher
-from scipy.stats import ttest_ind
-from scipy.misc import toimage
 
 NUM_CATEGORIES = 4
 
@@ -133,74 +127,6 @@ def build_net(x, n_inputs, layer_sizes, use_batch_norm, keep_prob):
         
     return logits, y
 
-def build_net_old(x, n_inputs, layer_sizes, use_batch_norm, keep_prob):  
-    
-    previous_layer = x
-    
-#     for n_units in layer_sizes:  
-#         W = weight_variable([n_inputs, n_units])
-#         b = bias_variable([n_units])    
-#         h = tf.nn.relu(tf.matmul(previous_layer, W) + b)   
-#         n_inputs = n_units 
-#         previous_layer = h
-
-    n_units = 256
-    W_1 = weight_variable([n_inputs, n_units])
-    b_1 = bias_variable([n_units])    
-    lin_1 = tf.matmul(x, W_1) + b_1   
-
-    if use_batch_norm:
-        # Calculate batch mean and variance
-        batch_mean1, batch_var1 = tf.nn.moments(lin_1,[0])
-    
-        # Apply the initial batch normalizing transform
-        h_hat = (lin_1 - batch_mean1) / tf.sqrt(batch_var1 + 1e-3)
-        
-        # Create two new parameters, scale and beta (shift)
-        scale1 = tf.Variable(tf.ones([n_units]))
-        beta1 = tf.Variable(tf.zeros([n_units]))
-        
-        # Scale and shift to obtain the final output of the batch normalization
-        # this value is fed into the activation function (here a sigmoid)
-        BN1 = scale1 * h_hat + beta1
-        h_1 = tf.nn.relu(BN1)    
-    else:
-        h_1 = tf.nn.relu(lin_1)
-
-    h_1_drop = tf.nn.dropout(h_1, keep_prob) 
-
-    n_inputs = n_units
-    n_units = 128
-    W_2 = weight_variable([n_inputs, n_units])
-    b_2 = bias_variable([n_units])    
-    lin_2 = tf.matmul(h_1_drop, W_2) + b_2   
-
-    if use_batch_norm:
-        # Calculate batch mean and variance
-        batch_mean2, batch_var2 = tf.nn.moments(lin_2,[0])
-    
-        # Apply the initial batch normalizing transform
-        h_hat_2 = (lin_2 - batch_mean2) / tf.sqrt(batch_var2 + 1e-3)
-        
-        # Create two new parameters, scale and beta (shift)
-        scale1_2 = tf.Variable(tf.ones([n_units]))
-        beta1_2 = tf.Variable(tf.zeros([n_units]))
-        
-        # Scale and shift to obtain the final output of the batch normalization
-        # this value is fed into the activation function (here a sigmoid)
-        BN2 = scale1_2 * h_hat_2 + beta1_2
-        h_2 = tf.nn.relu(BN2)    
-    else:
-        h_2 = tf.nn.relu(lin_2)
-
-    h_2_drop = tf.nn.dropout(h_2, keep_prob) 
-
-    W = weight_variable([n_units, NUM_CATEGORIES])
-    b = bias_variable([NUM_CATEGORIES])
-    y = tf.matmul(h_2_drop, W) + b
-        
-    return y
-
     
           
 def show_all_variables():
@@ -284,6 +210,10 @@ def build_input_data(proteins, SPdb_sequences, LocSigDB_sequences):
     x = []
     SPdb_count = 0
     LocSigDB_count = 0
+    use_specific_detectors = True
+    use_biochemical_features = True
+    use_LocSigDB = True
+    use_raw_sequence = True
     
     for p in proteins:
         x = []
@@ -291,27 +221,32 @@ def build_input_data(proteins, SPdb_sequences, LocSigDB_sequences):
         for seq_flag in [WHOLE_SEQUENCE, N_TERMINAL_50, C_TERMINAL_50]:
             sub_p = p.get_sub_sequence(seq_flag)
 
-            x.extend( convert_aa_dict_to_n20_vec(sub_p.get_amino_acids_percent()) )
-            x.append( sub_p.aromaticity() )
-            x.append( sub_p.instability_index() )
-            x.append( np.mean(sub_p.flexibility()) )
-            x.append( sub_p.isoelectric_point() )
-            x.append( sub_p.hydrophobicity() )
-            x.append( sub_p.hydrophilicity() )
-            (Helix, Turn, Sheet) = sub_p.secondary_structure_fraction()
-            x.extend( (Helix, Turn, Sheet) )
+            if use_raw_sequence:
+                x.extend( convert_aa_dict_to_n20_vec(sub_p.get_amino_acids_percent()) )
+            
+            if use_biochemical_features:
+                x.append( sub_p.aromaticity() )
+                x.append( sub_p.instability_index() )
+                x.append( np.mean(sub_p.flexibility()) )
+                x.append( sub_p.isoelectric_point() )
+                x.append( sub_p.hydrophobicity() )
+                x.append( sub_p.hydrophilicity() )
+                (Helix, Turn, Sheet) = sub_p.secondary_structure_fraction()
+                x.extend( (Helix, Turn, Sheet) )
 #             x.append( p.get_N_terminus_aa() )
 
-            if seq_flag == C_TERMINAL_50:
+            if seq_flag == C_TERMINAL_50 and use_specific_detectors:
                 x.append( int(sub_p.has_KDEL()) )
                 x.append( int(sub_p.has_KKXX()) )
                 x.append( int(sub_p.has_PTS()) )
             elif seq_flag == WHOLE_SEQUENCE:
-                x.append( sub_p.molecular_weight() )
-                x.append( int(sub_p.sequence_length()) )
-                x.append( int(sub_p.has_Chelsky_sequence()) )
-                x.append( int(sub_p.has_NLS()) )
-                x.append( int(sub_p.in_vivo_half_life()) )
+                if use_biochemical_features:
+                    x.append( sub_p.molecular_weight() )
+                    x.append( int(sub_p.sequence_length()) )
+                    x.append( int(sub_p.in_vivo_half_life()) )
+                if use_specific_detectors:
+                    x.append( int(sub_p.has_Chelsky_sequence()) )
+                    x.append( int(sub_p.has_NLS()) )
                 
                 
 #                 for SPdb_seq in SPdb_sequences:
@@ -319,10 +254,11 @@ def build_input_data(proteins, SPdb_sequences, LocSigDB_sequences):
 #                     if x[-1] == 1:
 #                         SPdb_count += 1
 
-                for LocSigdb_seq in LocSigDB_sequences:
-                    x.append( int(LocSigdb_seq in sub_p.get_sequence() ) )
-                    if x[-1] == 1:
-                        LocSigDB_count += 1
+                if use_LocSigDB:
+                    for LocSigdb_seq in LocSigDB_sequences:
+                        x.append( int(LocSigdb_seq in sub_p.get_sequence() ) )
+                        if x[-1] == 1:
+                            LocSigDB_count += 1
  
         X.append( x )
         y.append( p.get_category() )
@@ -363,30 +299,34 @@ def run_models(FLAGS):
     BATCH_SIZE = 32
     
     inputs_data_filename = 'input_data.pi'
-    calc_inputs = True
+    calc_inputs = False
     if calc_inputs:
         # Import data
         proteins, SPdb_sequences, LocSigDB_sequences = import_data()
         X_all, y_all = build_input_data(proteins, SPdb_sequences, LocSigDB_sequences)  
-        pi.dump( (X_all, y_all), open( inputs_data_filename, "wb" ) )
+        X_all, _, _ = normalize(X_all)
+        pi.dump( (X_all, y_all, proteins), open( inputs_data_filename, "wb" ) )
     else:
-        (X_all, y_all) = pi.load( open( inputs_data_filename, "rb" ) )
+        (X_all, y_all, proteins) = pi.load( open( inputs_data_filename, "rb" ) )
 
     print('num inputs=' + str(len(X_all[0])))
 
-    X_all, _, _ = normalize(X_all)
     X_non_blind = []
     y_non_blind = []
     X_blind = []
-    for x_i, y_i in zip(X_all, y_all):
+    X_blind_names = []
+    for x_i, y_i, protein in zip(X_all, y_all, proteins):
         if y_i == 4: #blind
             X_blind.append(x_i)
+            X_blind_names.append(protein.get_name())
         else:
             X_non_blind.append(x_i)
             y_non_blind.append(y_i)
             
     X_all = np.asarray(X_non_blind)
     y_all = np.asarray(y_non_blind)
+#     X_all = X_all[:1000]
+#     y_all = y_all[:1000]
     
     keep_prob = tf.placeholder(tf.float32, name='keep_prob')
     learning_rate = tf.placeholder(tf.float32, shape=[])
@@ -443,14 +383,27 @@ def run_models(FLAGS):
             lrs = LearningRateScheduler(decay)
             
         #     cv_data = KFold(n_splits=5)
-            n_splits = 5
+            n_splits = 2
             cv_data = StratifiedKFold(n_splits=n_splits)
-            cv_train_accuracy = []
             cv_test_accuracy = []
             cv_test_confidence = []
             cv_test_accuracy_vec = []
             cv_test_y_vec = []
             cv_test_y_pred = []
+            cv_test_y_label = []
+            
+            clf = svm.SVC(kernel='rbf', C=1.0, class_weight='balanced')
+#             scores = cross_val_score(clf, X_all, y_all, cv=n_splits)
+#             print('SVM score: mean ', np.mean(scores), ' raw ', scores)
+            svm_predictions = cross_val_predict(clf, X_all, y_all, cv=n_splits)
+            correct_samples = np.equal(y_all, svm_predictions) 
+            data = np.transpose( np.asarray( [correct_samples, y_all] ) )
+            df = pd.DataFrame(data, columns=["accuracy","class_label"])
+            grouped = df.groupby("class_label")
+            res = grouped.aggregate([np.sum, np.min, np.mean, np.max, np.std]) 
+            print('SVM - Accuracy of classification by class:')
+            print(res)
+
             fold = -1
             for train, test in cv_data.split(X_all, y_all):
                 fold += 1
@@ -468,11 +421,8 @@ def run_models(FLAGS):
                 y_test = y_all[test]
                 
                 tf.global_variables_initializer().run()    
-                conv_tester = ConvergenceTester(0.001, lookback_window=2, decreasing=True) #stop if converged to within 0.05%
-#                 clf = svm.SVC(kernel='rbf', C=0.5, class_weight='balanced')
-#                 scores = cross_val_score(clf, X_all, y_all, cv=2)
-#                 print('SVM score: ', scores)
-    
+                conv_tester = ConvergenceTester(0.001, lookback_window=3, decreasing=True) #stop if converged to within 0.05%
+                
                 db = DataBatcher(X_train, y_train)
                 ntrain = X_train.shape[0]
             
@@ -494,17 +444,11 @@ def run_models(FLAGS):
                     if epoch % 1 == 0: #calc intermediate results
          
                         train_accuracy, train_loss, train_summary = sess.run([accuracy, cross_entropy, merged], feed_dict={x: X_train, y_: y_train, keep_prob: 1.0})                                      
-                        y_vec, confidence, accuracy_vec_val, y_pred, test_accuracy, test_loss, test_summary = \
-                            sess.run([y, max_y, accuracy_vec, argm_y, accuracy, cross_entropy, merged], feed_dict={x: X_test, y_: y_test, keep_prob: 1.0})
+                        test_accuracy, test_loss, test_summary = \
+                            sess.run([accuracy, cross_entropy, merged], feed_dict={x: X_test, y_: y_test, keep_prob: 1.0})
                         
-                        cv_train_accuracy.append(train_accuracy)
-                        cv_test_accuracy.append(test_accuracy)
-                        cv_test_confidence.extend(confidence)
-                        cv_test_accuracy_vec.extend(accuracy_vec_val)
-                        cv_test_y_pred.extend(y_pred)
-                        cv_test_y_vec.extend(y_vec)
                         
-                        if epoch % 100 == 0: #calc intermediate results
+                        if epoch % 1 == 0: #calc intermediate results
                             print("f %d, e %d, tr:te accuracy %g : %g loss %g : %g lr %g et %s" % 
                               (fold, epoch, train_accuracy, test_accuracy, train_loss, test_loss, learning_rate_val, str(datetime.timedelta(seconds=end-start))))
                                        
@@ -515,14 +459,37 @@ def run_models(FLAGS):
                         test_writer.add_summary(test_summary, i)
                         
                         if conv_tester.has_converged(test_loss):
+                            y_vec, confidence, accuracy_vec_val, y_pred, test_accuracy = \
+                                sess.run([y, max_y, accuracy_vec, argm_y, accuracy], feed_dict={x: X_test, y_: y_test, keep_prob: 1.0})
+                            cv_test_accuracy.append(test_accuracy)
+                            cv_test_confidence.extend(confidence)
+                            cv_test_accuracy_vec.extend(accuracy_vec_val)
+                            cv_test_y_pred.extend(y_pred)
+                            cv_test_y_vec.extend(y_vec)
+                            cv_test_y_label.extend(y_test)
+
+                            #blind test data
+                            confidence, y_pred = \
+                                sess.run([max_y, argm_y], feed_dict={x: X_blind, keep_prob: 1.0})
+
+                            for name, cat, conf in zip(X_blind_names, y_pred, confidence):
+                                print(name + ',' + Protein.inv_category_codes[cat] + ',' + str(conf))
+                                
+                            data = np.transpose( np.asarray( [accuracy_vec_val, y_test] ) )
+                            df = pd.DataFrame(data, columns=["accuracy","class_label"])
+                            grouped = df.groupby("class_label")
+                            res = grouped.aggregate([np.min, np.mean, np.max, np.std]) 
+                            print('Accuracy of classification by class:')
+                            print(res)
+
 #                             print('converged after ', epoch, ' epochs')
                             print("converged f %d, e %d, tr:te accuracy %g : %g loss %g : %g lr %g et %s" % 
                               (fold, epoch, train_accuracy, test_accuracy, train_loss, test_loss, learning_rate_val, str(datetime.timedelta(seconds=end-start))))
                             break
                         
         print('mean test accuracy=%f' %(np.mean(cv_test_accuracy)))                            
-#         analyse_test_results(cv_train_accuracy, cv_test_accuracy, cv_test_confidence, 
-#                              cv_test_accuracy_vec, cv_test_y_pred, cv_test_y_vec)
+        analyse_test_results(cv_test_accuracy, cv_test_confidence, cv_test_y_label,
+                             cv_test_accuracy_vec, cv_test_y_pred, cv_test_y_vec, svm_predictions, y_all)
                             
             
         if FLAGS.eval and True:
@@ -543,8 +510,8 @@ def run_models(FLAGS):
 from scipy.stats.stats import pearsonr 
 import pandas as pd
     
-def analyse_test_results(cv_train_accuracy, cv_test_accuracy, cv_test_confidence, 
-                         cv_test_accuracy_vec, cv_test_y_pred, cv_test_y_vec):
+def analyse_test_results(cv_test_accuracy, cv_test_confidence, cv_test_y_label,
+                         cv_test_accuracy_vec, cv_test_y_pred, cv_test_y_vec, svm_predictions, y_all):
 
     data = np.transpose( np.asarray( [cv_test_confidence, cv_test_accuracy_vec] ) )
     df = pd.DataFrame(data, columns=["confidence","correct_incorrect"])
@@ -553,10 +520,10 @@ def analyse_test_results(cv_train_accuracy, cv_test_accuracy, cv_test_confidence
     print('Confidence by correct/incorrect:')
     print(res)
     
-    data = np.transpose( np.asarray( [cv_test_accuracy_vec, cv_test_y_pred] ) )
+    data = np.transpose( np.asarray( [cv_test_accuracy_vec, cv_test_y_label] ) )
     df = pd.DataFrame(data, columns=["accuracy","class_label"])
     grouped = df.groupby("class_label")
-    res = grouped.aggregate([np.min, np.mean, np.max, np.std]) 
+    res = grouped.aggregate([np.sum, np.min, np.mean, np.max, np.std]) 
     print('Accuracy of classification by class:')
     print(res)
     
@@ -566,8 +533,16 @@ def analyse_test_results(cv_train_accuracy, cv_test_accuracy, cv_test_confidence
     print('Correlation between predictions for each class:')
     print(res)
     
-    print('train accuracies: mean=', np.mean(cv_train_accuracy), end='')
-    print(' ', cv_train_accuracy)
     print('test accuracies: mean=', np.mean(cv_test_accuracy), end='')
     print(' ', cv_test_accuracy)
 
+
+    correct_samples = np.equal(y_all, svm_predictions) 
+    data = np.transpose( np.asarray( [correct_samples, y_all] ) )
+    df = pd.DataFrame(data, columns=["accuracy","class_label"])
+    grouped = df.groupby("class_label")
+    res = grouped.aggregate([np.min, np.mean, np.max, np.std]) 
+    print('SVM - Accuracy of classification by class:')
+    print(res)
+    
+    
